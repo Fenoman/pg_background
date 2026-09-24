@@ -2683,11 +2683,13 @@ pg_background_result_info(PG_FUNCTION_ARGS)
             if (output != NULL)
             {
                 /*
-                 * Read the publish flag first; only treat the row_count /
-                 * command_tag pair as valid if the worker has fully written
-                 * them. The pg_read_barrier() pairs with the worker's
-                 * pg_write_barrier() in execute_sql_string so we cannot see
-                 * a fresh row_count paired with a stale command_tag.
+                 * Read the publish flag first and read the row_count /
+                 * command_tag pair only after the worker has written one.
+                 * The pg_read_barrier() pairs with the worker's
+                 * pg_write_barrier() in execute_sql_string. While a
+                 * multi-command string is running the pair can mix two
+                 * commands, which is why these fields are reliable only when
+                 * completed is true (see the function header).
                  */
                 if (output->result_published)
                 {

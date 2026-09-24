@@ -274,7 +274,7 @@ context underneath them was a latent use-after-free.
 The OUTPUT struct contains pairs of fields the worker writes that the
 launcher reads concurrently:
 
-- `result_row_count` + `command_tag` (paired post-SPI metadata)
+- `result_row_count` + `command_tag` (metadata of the last finished command)
 - The whole error block (`error_message`, `error_detail`,
   `error_hint`, `error_context`, `error_schema_name`, `error_table_name`,
   `error_column_name`, `error_constraint_name`)
@@ -287,10 +287,13 @@ For each pair the worker writes the data fields first, issues
 | result_row_count + command_tag | `result_published` (uint8) |
 | error_* fields | `error_sqlstate` (non-empty) |
 
-Readers test the flag first; if set, issue `pg_read_barrier()` and only
-then read the other fields. This prevents the launcher from observing a
-fresh `row_count` paired with a stale `command_tag`, or a partially-
-written error.
+Readers test the flag first. If it is set, they issue `pg_read_barrier()`
+and only then read the other fields. This prevents the launcher from
+reading a partially written error, or a result pair before the worker has
+written one. The worker rewrites the result pair for each command of a
+multi-command string while `result_published` stays set, so the pair is
+consistent only once the worker has finished (`completed` is true in
+`pg_background_result_info`).
 
 ### Worker error-exit cleanup ordering (v2.0 F)
 

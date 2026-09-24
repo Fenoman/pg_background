@@ -747,13 +747,16 @@ execute_sql_string(const char *sql, pg_background_output *output)
             EndCommand(&qc, DestRemote, false);
 
             /*
-             * v1.9: Store result metadata from each command.
-             * The final values reflect the last command executed.
+             * Store result metadata for each command. The values left after
+             * the loop describe the last command, and the tag is the one
+             * EndCommand() sent.
              *
-             * v1.10: Publish via a write barrier + flag so a launcher reader
-             * (pg_background_result_info) cannot observe a fresh
-             * row_count paired with a stale command_tag. Mirrors the
-             * error_sqlstate publish-flag idiom.
+             * The write barrier orders the pair before the flag, so a reader
+             * never sees the flag before a pair is written. The flag stays
+             * set while later commands of a multi-command string overwrite
+             * the pair, so a concurrent reader (pg_background_result_info)
+             * can see the row_count of one command with the command_tag of
+             * another. The pair is consistent once the worker has finished.
              */
             if (output != NULL)
             {
