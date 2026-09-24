@@ -1541,7 +1541,7 @@ DROP TABLE pgbg_test_fk_parent_23503;
 -- Uses pg_sleep(30) to ensure worker is truly sleeping before cancel.
 -- Positive sync via pg_stat_activity: cancel is only sent after the worker
 -- is confirmed to be actively executing pg_sleep. Without this sync, cancel
--- could land before SPI_execute starts (early-failure path) and the
+-- could land before the SQL starts running (early-failure path) and the
 -- launcher would see 08006 instead of 57014.
 DO $$
 DECLARE
@@ -1553,7 +1553,7 @@ DECLARE
 BEGIN
     h := pg_background_launch_v2('SELECT pg_sleep(30)');
     w_pid := h.pid;
-    /* Positive sync: let the worker fork and reach SPI_execute, then
+    /* Positive sync: let the worker fork and start running the SQL, then
        confirm it is actively running via pg_stat_activity.  An initial
        sleep gives the OS scheduler time to start the child process;
        afterwards we poll at 100 ms intervals for up to ~5 s total. */

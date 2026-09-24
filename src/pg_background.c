@@ -2701,7 +2701,7 @@ pg_background_result_info(PG_FUNCTION_ARGS)
 
                 /*
                  * v2.0 (B5b): execution timestamps. Zero means "not set yet"
-                 * (worker hasn't reached the SPI loop / hasn't finished).
+                 * (worker hasn't reached the command loop / hasn't finished).
                  */
                 started_at = output->started_at;
                 finished_at = output->finished_at;

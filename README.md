@@ -140,7 +140,7 @@ A 30-second decision table. Pick the row that matches your job, not the column y
 
 The launcher allocates a DSM segment, registers a dynamic background
 worker, and waits for it to attach a shared-memory queue. The worker
-restores the launcher's GUCs, runs the SQL via SPI, streams rows back
+restores the launcher's GUCs, runs each SQL command through a portal, streams rows back
 through the queue, and writes structured metadata (row count, command
 tag, error fields) into a launcher-readable struct in DSM. The
 launcher consumes rows via `pg_background_result` and tears down
@@ -179,7 +179,7 @@ publish-flag patterns are in **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**.
 **Forward-compatibility additions** — adding columns later is painful, so 2.0 widens the composite types now:
 
 - `pg_background_stats` gains `workers_timed_out int8` (separate from `workers_canceled`; bumped by `pg_background_run` on timeout).
-- `pg_background_result_info` gains `started_at`, `finished_at` (timestamptz) — the worker writes these around its SPI loop.
+- `pg_background_result_info` gains `started_at`, `finished_at` (timestamptz) — the worker writes these around its command loop.
 - `pg_background_error` gains `schema_name`, `table_name`, `column_name`, `constraint_name` — sourced from PG's `edata` for heap/access errors.
 - `pg_background_run_result` now **extends** `pg_background_outcome` (gains `cookie`, `state`, `consumed`, `label`, `launched_at`) plus `timed_out` + `elapsed_ms`. No more duplicate column shape.
 

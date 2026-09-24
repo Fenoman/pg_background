@@ -177,8 +177,8 @@ typedef struct pg_background_output
 
     /*
      * v2.0 (B5b): execution timestamps. started_at is written by the worker
-     * just before the SPI loop starts; finished_at is written when the
-     * worker finishes (success or error). Both are TimestampTz (microseconds
+     * just before the command loop starts, and finished_at when the worker
+     * finishes (success or error). Both are TimestampTz (microseconds
      * since 2000-01-01 UTC) and zero means "not set".
      */
     TimestampTz started_at;             /* Execution start (0 = not set) */

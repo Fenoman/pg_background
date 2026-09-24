@@ -77,7 +77,7 @@ sequenceDiagram
 │  Background Worker Process       │
 │  - Attach database               │
 │  - Restore session GUCs          │
-│  - Execute SQL via SPI           │
+│  - Run SQL through portals       │
 │  - Send results via shm_mq       │
 │  - Exit (DSM cleanup)            │
 └──────────────────────────────────┘
@@ -126,7 +126,7 @@ avoids cache-line bouncing between launcher and worker.
 frames, and any NOTIFY/'A' frames the worker emits.
 
 **Flow**:
-1. Worker executes the query via SPI.
+1. Worker runs each command of the SQL string through a portal.
 2. Each result row is serialized to the shm_mq.
 3. The launcher reads from the queue in `pg_background_result`.
 4. Queue blocks the writer if full (backpressure).
@@ -160,7 +160,7 @@ RegisterDynamicBackgroundWorker(&worker, &handle);
 - `bgw_notify_pid`: launcher PID (for postmaster-driven notifications).
 - `bgw_main_arg`: DSM handle (Datum).
 
-### Server Programming Interface (SPI)
+### Query execution
 
 **Execution pipeline**: parse → analyze → plan → execute via Portal.
 The worker calls into `pg_parse_query`, `pg_analyze_and_rewrite_*`,
@@ -169,7 +169,10 @@ flow through a remote `DestReceiver` that writes into `shm_mq`.
 
 **Result serialization on the wire**:
 - `RowDescription`: column metadata (names, types, formats).
-- `DataRow`: binary-encoded tuple data.
+- `DataRow`: tuple data, binary for columns whose types, including every
+  nested type, have binary send/receive functions and text for the others.
+  The fields of an anonymous record are not checked, so a record column is
+  always binary.
 - `CommandComplete`: result tag (e.g., "SELECT 42"); the worker also
   writes the row count and command tag into the OUTPUT struct so
   `result_info` can report them without re-reading the queue.
