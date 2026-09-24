@@ -1450,6 +1450,14 @@ return `SETOF record`. PostgreSQL needs the row shape declared at parse
 time, either via `AS (col1 type, col2 type, ...)` or by reading from a
 view/wrapper that has a fixed row type.
 
+Declare each column with the type the worker's query returns (for a domain,
+its base type). A column whose type has no binary send/receive functions (for
+example `aclitem`, or an array, domain, named composite or range type that
+contains one) is sent as text and must be declared `text`. The fields of an
+anonymous record (`ROW(...)` without a named type) are not checked, so such a
+column is always sent in binary, and the worker fails when it has to send a
+non-NULL field whose type has no binary send function.
+
 **Solutions**:
 
 ```sql

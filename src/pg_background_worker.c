@@ -42,7 +42,9 @@
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
+#include "utils/fmgroids.h"
 #include "utils/guc.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/resowner.h"
@@ -50,6 +52,7 @@
 #include "utils/syscache.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"   /* GetCurrentTimestamp (no longer transitively included in PG 19) */
+#include "utils/typcache.h"
 
 #include <signal.h>
 
@@ -106,8 +109,10 @@ pgbg_portal_run_compat(Portal portal,
 
 static void pg_background_worker_error_exit(pg_background_output *output);
 static void execute_sql_string(const char *sql, pg_background_output *output);
+static bool pgbg_type_has_binary_io(Oid type);
+static bool pgbg_type_has_binary_io_walk(Oid type, List **checked);
+static void pgbg_set_result_formats(Portal portal);
 static void handle_sigterm(SIGNAL_ARGS);
-/* exists_binary_recv_fn is exported via pg_background_internal.h */
 
 /* ============================================================================
  * BACKGROUND WORKER ERROR-EXIT PATH
@@ -481,28 +486,120 @@ pg_background_worker_main(Datum main_arg)
  */
 
 /*
- * exists_binary_recv_fn
- *     Check if a type has a binary receive function.
+ * pgbg_type_has_binary_io
+ *     Whether values of a type can travel in binary format: the type has
+ *     binary send and receive functions, and so does every type nested in
+ *     it (array element, domain base type, composite attribute, range
+ *     subtype).
  *
- * Non-static so the launcher's result reader (in pg_background.c) can
- * call it directly. Declared extern in pg_background_internal.h.
+ * The worker sends a result column in binary format when this returns true
+ * and in text format otherwise, and reports the choice in the format code of
+ * the RowDescription, which the launcher follows. The columns of an
+ * anonymous record are not known here, so a record column goes in binary
+ * format.
  */
-bool
-exists_binary_recv_fn(Oid type)
+static bool
+pgbg_type_has_binary_io(Oid type)
 {
-    HeapTuple typeTuple;
+    List       *checked = NIL;
+    bool        result;
+
+    result = pgbg_type_has_binary_io_walk(type, &checked);
+    list_free(checked);
+
+    return result;
+}
+
+/*
+ * pgbg_type_has_binary_io_walk
+ *     The recursive part of pgbg_type_has_binary_io().
+ *
+ * checked collects the types found to have binary I/O during this walk, so a
+ * type reached along several paths (for example two attributes of the same
+ * composite type) is examined once. A type without binary I/O ends the walk,
+ * so every type met again is either in checked or has no binary I/O check
+ * pending: PostgreSQL does not allow a type to contain itself.
+ */
+static bool
+pgbg_type_has_binary_io_walk(Oid type, List **checked)
+{
+    HeapTuple   typeTuple;
     Form_pg_type pt;
-    bool exists_recv_fn;
+    bool        result;
+    char        typtype;
+    Oid         nested = InvalidOid;
+
+    check_stack_depth();
+    CHECK_FOR_INTERRUPTS();
+
+    if (list_member_oid(*checked, type))
+        return true;
 
     typeTuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(type));
     if (!HeapTupleIsValid(typeTuple))
         elog(ERROR, "cache lookup failed for type %u", type);
 
     pt = (Form_pg_type) GETSTRUCT(typeTuple);
-    exists_recv_fn = OidIsValid(pt->typreceive);
+    result = OidIsValid(pt->typsend) && OidIsValid(pt->typreceive);
+    typtype = pt->typtype;
+    if (IsTrueArrayType(pt))
+        nested = pt->typelem;
+    else if (typtype == TYPTYPE_DOMAIN)
+        nested = pt->typbasetype;
     ReleaseSysCache(typeTuple);
 
-    return exists_recv_fn;
+    if (!result)
+        return false;
+
+    if (OidIsValid(nested))
+        result = pgbg_type_has_binary_io_walk(nested, checked);
+    else if (typtype == TYPTYPE_RANGE)
+        result = pgbg_type_has_binary_io_walk(get_range_subtype(type), checked);
+    else if (typtype == TYPTYPE_MULTIRANGE)
+        result = pgbg_type_has_binary_io_walk(get_multirange_range(type), checked);
+    else if (typtype == TYPTYPE_COMPOSITE)
+    {
+        TupleDesc   tupdesc = lookup_rowtype_tupdesc(type, -1);
+        int         i;
+
+        for (i = 0; i < tupdesc->natts && result; i++)
+        {
+            Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+
+            if (!att->attisdropped)
+                result = pgbg_type_has_binary_io_walk(att->atttypid, checked);
+        }
+        ReleaseTupleDesc(tupdesc);
+    }
+
+    if (result)
+        *checked = lappend_oid(*checked, type);
+
+    return result;
+}
+
+/*
+ * pgbg_set_result_formats
+ *     Choose the wire format of each result column of a portal: binary when
+ *     pgbg_type_has_binary_io() allows it, text otherwise.
+ */
+static void
+pgbg_set_result_formats(Portal portal)
+{
+    int         natts;
+    int16      *formats;
+    int         i;
+
+    if (portal->tupDesc == NULL)
+        return;
+
+    natts = portal->tupDesc->natts;
+    formats = palloc(natts * sizeof(int16));
+    for (i = 0; i < natts; i++)
+        formats[i] = pgbg_type_has_binary_io(TupleDescAttr(portal->tupDesc, i)->atttypid) ? 1 : 0;
+
+    PortalSetResultFormat(portal, natts, formats);
+    pfree(formats);
 }
 
 /*
@@ -580,7 +677,6 @@ execute_sql_string(const char *sql, pg_background_output *output)
             bool        snapshot_set = false;
             Portal      portal;
             DestReceiver *receiver;
-            int16       format = 1;
 
             if (IsA(parsetree->stmt, TransactionStmt))
                 ereport(ERROR,
@@ -631,7 +727,7 @@ execute_sql_string(const char *sql, pg_background_output *output)
 
             pgbg_portal_define_query_compat(portal, NULL, sql, commandTag, plantree_list, NULL);
             PortalStart(portal, NULL, 0, InvalidSnapshot);
-            PortalSetResultFormat(portal, 1, &format);
+            pgbg_set_result_formats(portal);
 
             commands_remaining--;
             if (commands_remaining > 0)

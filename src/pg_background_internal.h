@@ -287,12 +287,4 @@ extern PGDLLEXPORT void pg_background_worker_main(Datum main_arg);
  */
 extern void pg_background_error_callback(void *arg);
 
-/*
- * exists_binary_recv_fn
- *     Whether a type has a binary receive function. Lives in
- *     pg_background_worker.c; the launcher's result reader calls it when
- *     deciding how to consume a tuple field.
- */
-extern bool exists_binary_recv_fn(Oid type);
-
 #endif  /* PG_BACKGROUND_INTERNAL_H_ */

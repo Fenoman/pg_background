@@ -2099,3 +2099,100 @@ BEGIN
     PERFORM pg_background_detach(h.pid, h.cookie);
     RAISE NOTICE 'worker_timeout for the whole worker OK';
 END$$;
+
+-- =========================================================================
+-- Result columns whose type has no binary send/receive functions arrive as
+-- text, including aclitem nested in an array, a domain, a composite type, a
+-- range and a multirange. The other columns of the same row stay binary
+-- =========================================================================
+
+DROP DOMAIN IF EXISTS pgbg_acl_list;
+DROP TYPE IF EXISTS pgbg_acl_range;
+DROP TYPE IF EXISTS pgbg_acl_pair;
+CREATE DOMAIN pgbg_acl_list AS aclitem[];
+CREATE TYPE pgbg_acl_pair AS (n int, acl aclitem);
+CREATE TYPE pgbg_acl_range AS RANGE (subtype = pgbg_acl_pair, subtype_opclass = record_ops, multirange_type_name = pgbg_acl_multirange);
+DO $$
+DECLARE
+    h pg_background_handle;
+    r record;
+BEGIN
+    h := pg_background_launch('SELECT 1::int AS a, NULL::aclitem AS b, makeaclitem(10, 10, ''SELECT'', false) AS c, ''x''::text AS d, ARRAY[makeaclitem(10, 10, ''SELECT'', false)] AS e, ARRAY[makeaclitem(10, 10, ''SELECT'', false)]::pgbg_acl_list AS f, ROW(1, makeaclitem(10, 10, ''SELECT'', false))::pgbg_acl_pair AS g, ''empty''::pgbg_acl_range AS h, ''{}''::pgbg_acl_multirange AS i');
+    PERFORM pg_background_wait(h.pid, h.cookie);
+    SELECT * INTO r FROM pg_background_result(h.pid, h.cookie) AS t(a int, b text, c text, d text, e text, f text, g text, h text, i text);
+    IF r.a IS DISTINCT FROM 1 OR r.b IS NOT NULL
+       OR (r.c LIKE '%=r/%') IS NOT TRUE OR r.d IS DISTINCT FROM 'x'
+       OR (r.e LIKE '{%=r/%}') IS NOT TRUE OR (r.f LIKE '{%=r/%}') IS NOT TRUE
+       OR (r.g LIKE '(1,%=r/%)') IS NOT TRUE
+       OR r.h IS DISTINCT FROM 'empty' OR r.i IS DISTINCT FROM '{}' THEN
+        RAISE EXCEPTION 'text-format result columns: got a=%, b=%, c=%, d=%, e=%, f=%, g=%, h=%, i=%', r.a, r.b, r.c, r.d, r.e, r.f, r.g, r.h, r.i;
+    END IF;
+    RAISE NOTICE 'text-format result columns OK';
+END$$;
+-- A result type that reaches the same nested type along many paths is checked
+-- once per type: each pgbg_dag_N has two attributes of type pgbg_dag_(N-1)
+-- down to pgbg_dag_0, so a walk that does not remember checked types takes
+-- about 3.2 billion steps for pgbg_dag_30.
+DO $$
+BEGIN
+    FOR i IN REVERSE 30..0 LOOP
+        IF to_regtype(format('pgbg_dag_%s', i)) IS NOT NULL THEN
+            EXECUTE format('DROP TYPE pgbg_dag_%s', i);
+        END IF;
+    END LOOP;
+    CREATE TYPE pgbg_dag_0 AS (x int);
+    FOR i IN 1..30 LOOP
+        EXECUTE format('CREATE TYPE pgbg_dag_%s AS (a pgbg_dag_%s)', i, i - 1);
+    END LOOP;
+    FOR i IN REVERSE 30..1 LOOP
+        EXECUTE format('ALTER TYPE pgbg_dag_%s ADD ATTRIBUTE b pgbg_dag_%s', i, i - 1);
+    END LOOP;
+END$$;
+DO $$
+DECLARE
+    h pg_background_handle;
+    v int;
+    stopped bool;
+BEGIN
+    h := pg_background_launch('SELECT NULL::pgbg_dag_30; SELECT 1');
+    IF NOT pg_background_wait(h.pid, h.cookie, 10000) THEN
+        PERFORM pg_background_cancel(h.pid, h.cookie, 5000);
+        stopped := pg_background_wait(h.pid, h.cookie, 5000);
+        PERFORM pg_background_detach(h.pid, h.cookie);
+        RAISE EXCEPTION 'nested result types: worker still running after 10 s, stopped after cancel: %', stopped;
+    END IF;
+    SELECT r INTO v FROM pg_background_result(h.pid, h.cookie) AS (r int);
+    IF v IS DISTINCT FROM 1 THEN
+        RAISE EXCEPTION 'nested result types: expected 1, got %', v;
+    END IF;
+    RAISE NOTICE 'nested result types OK';
+END$$;
+DO $$
+BEGIN
+    FOR i IN REVERSE 30..0 LOOP
+        EXECUTE format('DROP TYPE IF EXISTS pgbg_dag_%s', i);
+    END LOOP;
+END$$;
+-- The launcher reads the format of each column from the RowDescription, not
+-- from the current catalog: a composite type that gains an aclitem attribute
+-- after the worker sent its row in binary format is still read in binary.
+DROP TYPE IF EXISTS pgbg_late_acl;
+CREATE TYPE pgbg_late_acl AS (n int);
+DO $$
+DECLARE
+    h pg_background_handle;
+    is_null bool;
+BEGIN
+    h := pg_background_launch('SELECT NULL::pgbg_late_acl');
+    PERFORM pg_background_wait(h.pid, h.cookie);
+    ALTER TYPE pgbg_late_acl ADD ATTRIBUTE a aclitem;
+    SELECT r IS NULL INTO is_null FROM pg_background_result(h.pid, h.cookie) AS (r pgbg_late_acl);
+    IF is_null IS NOT TRUE THEN
+        RAISE EXCEPTION 'format from RowDescription: expected a NULL row value, got %', is_null;
+    END IF;
+    RAISE NOTICE 'format from RowDescription OK';
+END$$;
+DROP TYPE IF EXISTS pgbg_late_acl;
+DROP TYPE IF EXISTS pgbg_acl_range;
+DROP DOMAIN IF EXISTS pgbg_acl_list;
+DROP TYPE IF EXISTS pgbg_acl_pair;
