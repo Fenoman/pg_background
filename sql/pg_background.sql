@@ -2020,3 +2020,82 @@ BEGIN
     RAISE NOTICE 'multi-command write after write OK';
 END$$;
 DROP TABLE IF EXISTS t_multi_write;
+
+-- =========================================================================
+-- Timeouts: statement_timeout limits each command of the SQL string, and
+-- pg_background.worker_timeout limits all commands together
+-- =========================================================================
+
+-- A SET statement_timeout inside the string applies to the commands after it.
+DO $$
+DECLARE
+    h pg_background_handle;
+    s text;
+BEGIN
+    h := pg_background_launch('SET statement_timeout = ''100ms''; SELECT pg_sleep(3)');
+    PERFORM pg_background_wait(h.pid, h.cookie);
+    SELECT sqlstate INTO s FROM pg_background_error_info(h.pid, h.cookie);
+    IF s IS DISTINCT FROM '57014' THEN
+        PERFORM pg_background_detach(h.pid, h.cookie);
+        RAISE EXCEPTION 'statement_timeout set in the string: expected sqlstate 57014, got %', s;
+    END IF;
+    PERFORM pg_background_detach(h.pid, h.cookie);
+    RAISE NOTICE 'statement_timeout set in the string OK';
+END$$;
+
+-- statement_timeout also covers parsing the SQL string, which counts toward
+-- the first command: a string that takes longer to parse than the timeout
+-- fails in its first command.
+DO $$
+DECLARE
+    h pg_background_handle;
+    s text;
+BEGIN
+    SET LOCAL statement_timeout = '1ms';
+    SET LOCAL log_min_error_statement = 'panic';
+    h := pg_background_launch('/* ' || repeat('x', 16 * 1024 * 1024) || ' */ SELECT 1');
+    PERFORM pg_background_wait(h.pid, h.cookie);
+    SELECT sqlstate INTO s FROM pg_background_error_info(h.pid, h.cookie);
+    IF s IS DISTINCT FROM '57014' THEN
+        PERFORM pg_background_detach(h.pid, h.cookie);
+        RAISE EXCEPTION 'statement_timeout while parsing: expected sqlstate 57014, got %', s;
+    END IF;
+    PERFORM pg_background_detach(h.pid, h.cookie);
+    RAISE NOTICE 'statement_timeout while parsing OK';
+END$$;
+
+-- The launcher's statement_timeout limits each command, not the whole string:
+-- four 0.6 s commands and a final marker finish under a 2 s statement_timeout.
+DO $$
+DECLARE
+    h pg_background_handle;
+    v text;
+BEGIN
+    SET LOCAL statement_timeout = '2s';
+    h := pg_background_launch('SELECT pg_sleep(0.6); SELECT pg_sleep(0.6); SELECT pg_sleep(0.6); SELECT pg_sleep(0.6); SELECT ''done''');
+    PERFORM pg_background_wait(h.pid, h.cookie);
+    SELECT r INTO v FROM pg_background_result(h.pid, h.cookie) AS (r text);
+    IF v IS DISTINCT FROM 'done' THEN
+        RAISE EXCEPTION 'statement_timeout per command: expected done, got %', v;
+    END IF;
+    RAISE NOTICE 'statement_timeout per command OK';
+END$$;
+
+-- pg_background.worker_timeout limits all commands together: the same commands
+-- are canceled under a 2 s worker_timeout.
+DO $$
+DECLARE
+    h pg_background_handle;
+    s text;
+BEGIN
+    SET LOCAL pg_background.worker_timeout = '2s';
+    h := pg_background_launch('SELECT pg_sleep(0.6); SELECT pg_sleep(0.6); SELECT pg_sleep(0.6); SELECT pg_sleep(0.6); SELECT ''done''');
+    PERFORM pg_background_wait(h.pid, h.cookie);
+    SELECT sqlstate INTO s FROM pg_background_error_info(h.pid, h.cookie);
+    IF s IS DISTINCT FROM '57014' THEN
+        PERFORM pg_background_detach(h.pid, h.cookie);
+        RAISE EXCEPTION 'worker_timeout for the whole worker: expected sqlstate 57014, got %', s;
+    END IF;
+    PERFORM pg_background_detach(h.pid, h.cookie);
+    RAISE NOTICE 'worker_timeout for the whole worker OK';
+END$$;

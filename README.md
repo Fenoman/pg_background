@@ -385,7 +385,7 @@ SET pg_background.worker_timeout = '5min';
 |---------------|---------|-------|-------------|
 | `pg_background.max_workers` | 16 | 1-1000 | Max concurrent workers per session |
 | `pg_background.default_queue_size` | 65536 | 4KB-256MB | Default shared memory queue size |
-| `pg_background.worker_timeout` | 0 | 0-∞ | Worker execution timeout (0 = no limit) |
+| `pg_background.worker_timeout` | 0 | 0-∞ | Limit for all statements of the SQL string together, not including the commit (0 = not set, `statement_timeout` then applies to each statement) |
 
 ---
 
@@ -1164,7 +1164,15 @@ WHERE backend_type LIKE '%background%'
 
 #### 2. Statement Timeout
 
-Workers inherit `statement_timeout` from launcher session.
+Workers inherit `statement_timeout` from the launcher session. It applies to
+each statement of the SQL string separately, as for a multi-statement query
+sent by a client: parsing the string counts toward the first statement, and a
+`SET statement_timeout` inside the string applies to the statements after it.
+When `pg_background.worker_timeout` is set, it limits all statements of the
+string together instead, and `statement_timeout` is not applied. The worker
+takes `worker_timeout` when it starts, so a `SET pg_background.worker_timeout`
+inside the string does not change it. Neither timeout covers the commit at the
+end, including deferred triggers and constraint checks that run there.
 
 **Set Per-Worker Timeout**:
 ```sql

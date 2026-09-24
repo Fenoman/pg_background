@@ -394,24 +394,19 @@ pg_background_worker_main(Datum main_arg)
         StartTransactionCommand();
 
         /*
-         * Apply worker timeout. Priority:
-         * 1. pg_background.worker_timeout if set (> 0)
-         * 2. session's statement_timeout if set (> 0)
-         * 3. no timeout
+         * pg_background.worker_timeout, when set (> 0), limits all commands
+         * of the SQL string together (not the commit) and is armed once here.
+         * Otherwise statement_timeout limits each command separately (see
+         * execute_sql_string()). The timer armed here then also covers
+         * parsing the SQL string, which counts toward the first command, as
+         * in exec_simple_query.
          */
-        {
-            int effective_timeout = 0;
-
-            if (pgbg_worker_timeout > 0)
-                effective_timeout = pgbg_worker_timeout;
-            else if (StatementTimeout > 0)
-                effective_timeout = StatementTimeout;
-
-            if (effective_timeout > 0)
-                enable_timeout_after(STATEMENT_TIMEOUT, effective_timeout);
-            else
-                disable_timeout(STATEMENT_TIMEOUT, false);
-        }
+        if (pgbg_worker_timeout > 0)
+            enable_timeout_after(STATEMENT_TIMEOUT, pgbg_worker_timeout);
+        else if (StatementTimeout > 0)
+            enable_timeout_after(STATEMENT_TIMEOUT, StatementTimeout);
+        else
+            disable_timeout(STATEMENT_TIMEOUT, false);
 
         SetUserIdAndSecContext(input->current_user_id, input->sec_context);
 
@@ -565,12 +560,14 @@ execute_sql_string(const char *sql, pg_background_output *output)
         List       *raw_parsetree_list;
         ListCell   *lc1;
         bool        isTopLevel;
+        bool        per_command_timeout;
         int         commands_remaining;
 
         oldcontext = MemoryContextSwitchTo(parsecontext);
         raw_parsetree_list = pg_parse_query(sql);
         commands_remaining = list_length(raw_parsetree_list);
         isTopLevel = (commands_remaining == 1);
+        per_command_timeout = (pgbg_worker_timeout <= 0);
         MemoryContextSwitchTo(oldcontext);
 
         foreach(lc1, raw_parsetree_list)
@@ -589,6 +586,24 @@ execute_sql_string(const char *sql, pg_background_output *output)
                 ereport(ERROR,
                         (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
                          errmsg("transaction control statements are not allowed in pg_background")));
+
+            /*
+             * Without pg_background.worker_timeout, statement_timeout limits
+             * each command separately and follows a SET statement_timeout run
+             * by an earlier command, as exec_simple_query does. A timer that
+             * is still running (the one armed before parsing, for the first
+             * command) is left as is.
+             */
+            if (per_command_timeout)
+            {
+                if (StatementTimeout > 0)
+                {
+                    if (!get_timeout_active(STATEMENT_TIMEOUT))
+                        enable_timeout_after(STATEMENT_TIMEOUT, StatementTimeout);
+                }
+                else
+                    disable_timeout(STATEMENT_TIMEOUT, false);
+            }
 
             commandTag = CreateCommandTag((Node *) parsetree);
             set_ps_display(GetCommandTagName(commandTag));
@@ -661,6 +676,9 @@ execute_sql_string(const char *sql, pg_background_output *output)
              */
             if (commands_remaining > 0)
                 CommandCounterIncrement();
+
+            if (per_command_timeout)
+                disable_timeout(STATEMENT_TIMEOUT, false);
         }
 
         CommandCounterIncrement();
