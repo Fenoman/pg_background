@@ -1979,3 +1979,44 @@ BEGIN
     DROP ROLE pgbg_canon_priv_role;
     RAISE NOTICE 'canonical privilege-helper lockdown OK';
 END$$;
+
+-- =========================================================================
+-- Multi-command SQL strings: each command sees the effects of the commands
+-- before it, as in a multi-command query string sent by a client
+-- =========================================================================
+
+-- Read after write: the SELECT counts the rows the INSERT before it wrote.
+DO $$
+DECLARE
+    h pg_background_handle;
+    n bigint;
+BEGIN
+    h := pg_background_launch('CREATE TEMP TABLE t_multi_read (id int); INSERT INTO t_multi_read VALUES (1), (2), (3); SELECT count(*) FROM t_multi_read');
+    PERFORM pg_background_wait(h.pid, h.cookie);
+    SELECT c INTO n FROM pg_background_result(h.pid, h.cookie) AS r(c bigint);
+    IF n IS DISTINCT FROM 3 THEN
+        RAISE EXCEPTION 'multi-command read after write: expected count 3, got %', n;
+    END IF;
+    RAISE NOTICE 'multi-command read after write OK';
+END$$;
+
+-- Write after write: the second UPDATE sees the row version the first one
+-- produced, so both increments are committed.
+DROP TABLE IF EXISTS t_multi_write;
+CREATE TABLE t_multi_write (id int PRIMARY KEY, x int NOT NULL);
+INSERT INTO t_multi_write VALUES (1, 0);
+DO $$
+DECLARE
+    h pg_background_handle;
+    x_committed int;
+BEGIN
+    h := pg_background_launch('UPDATE t_multi_write SET x = x + 1 WHERE id = 1; UPDATE t_multi_write SET x = x + 1 WHERE id = 1');
+    PERFORM pg_background_wait(h.pid, h.cookie);
+    PERFORM pg_background_detach(h.pid, h.cookie);
+    SELECT x INTO x_committed FROM t_multi_write WHERE id = 1;
+    IF x_committed IS DISTINCT FROM 2 THEN
+        RAISE EXCEPTION 'multi-command write after write: expected x = 2, got %', x_committed;
+    END IF;
+    RAISE NOTICE 'multi-command write after write OK';
+END$$;
+DROP TABLE IF EXISTS t_multi_write;

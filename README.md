@@ -583,7 +583,7 @@ SELECT * FROM pg_background_get_progress(:'h.pid', :'h.cookie');
 | `pg_background_purge()` | `int4` | Detach only workers that have already stopped (vs `detach_all` which is unconditional) |
 
 **Parameters**:
-- `sql`: SQL command(s) to execute (multiple statements allowed)
+- `sql`: SQL command(s) to execute. Multiple statements are allowed: they run in one transaction, and each sees the effects of the statements before it.
 - `queue_size`: Shared memory queue size in bytes (default: 65536, min: 4096)
 - `pid`: Process ID from handle
 - `cookie`: Unique identifier from handle (prevents PID reuse)

@@ -514,12 +514,13 @@ exists_binary_recv_fn(Oid type)
  * execute_sql_string
  *     Parse and execute SQL commands in the worker.
  *
- * Supports multiple commands separated by semicolons.
+ * Supports multiple commands separated by semicolons. Each command sees the
+ * effects of the commands before it.
  * Transaction control statements are not allowed.
  *
  * Populates output->result_row_count and output->command_tag with metadata
  * from the final command executed, and writes started_at/finished_at
- * timestamps around the SPI loop.
+ * timestamps around the command loop.
  */
 static void
 execute_sql_string(const char *sql, pg_background_output *output)
@@ -653,6 +654,13 @@ execute_sql_string(const char *sql, pg_background_output *output)
             }
 
             PortalDrop(portal, false);
+
+            /*
+             * Make this command's effects visible to the next one, as
+             * exec_simple_query does between the commands of a query string.
+             */
+            if (commands_remaining > 0)
+                CommandCounterIncrement();
         }
 
         CommandCounterIncrement();
