@@ -758,7 +758,9 @@ execute_sql_string(const char *sql, pg_background_output *output)
             if (output != NULL)
             {
                 output->result_row_count = qc.nprocessed;
-                strlcpy(output->command_tag, GetCommandTagName(commandTag),
+                strlcpy(output->command_tag,
+                        GetCommandTagName(qc.commandTag != CMDTAG_UNKNOWN ?
+                                          qc.commandTag : commandTag),
                         sizeof(output->command_tag));
                 pg_write_barrier();
                 output->result_published = 1;

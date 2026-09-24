@@ -2196,3 +2196,24 @@ DROP TYPE IF EXISTS pgbg_late_acl;
 DROP TYPE IF EXISTS pgbg_acl_range;
 DROP DOMAIN IF EXISTS pgbg_acl_list;
 DROP TYPE IF EXISTS pgbg_acl_pair;
+
+-- =========================================================================
+-- Result metadata: command_tag is the tag the worker reports for the last
+-- command, so EXECUTE of a prepared SELECT reports SELECT
+-- =========================================================================
+
+DO $$
+DECLARE
+    h pg_background_handle;
+    ri pg_background_result_info;
+BEGIN
+    h := pg_background_launch('PREPARE pgbg_q AS SELECT 1; EXECUTE pgbg_q');
+    PERFORM pg_background_wait(h.pid, h.cookie);
+    ri := pg_background_result_info(h.pid, h.cookie);
+    IF ri.command_tag IS DISTINCT FROM 'SELECT' OR ri.row_count IS DISTINCT FROM 1 THEN
+        PERFORM pg_background_detach(h.pid, h.cookie);
+        RAISE EXCEPTION 'EXECUTE command tag: got command_tag=%, row_count=%', ri.command_tag, ri.row_count;
+    END IF;
+    PERFORM pg_background_detach(h.pid, h.cookie);
+    RAISE NOTICE 'EXECUTE command tag OK';
+END$$;
