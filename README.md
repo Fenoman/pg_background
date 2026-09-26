@@ -200,7 +200,7 @@ The full chain is documented in [`docs/MIGRATION.md`](docs/MIGRATION.md).
 
 | PostgreSQL Version | Support Status | Notes |
 |--------------------|----------------|-------|
-| **19** | 🧪 Beta Support | Validated against 19beta1; explicit proc.h / latch.h / wait_event.h includes |
+| **19** | 🧪 Beta Support | Validated against 19beta4; explicit proc.h / latch.h / wait_event.h includes |
 | **18** | ✅ Fully Supported | TupleDescAttr compatibility layer |
 | **17** | ✅ Fully Tested | Recommended for new deployments |
 | **16** | ✅ Fully Tested | Production-ready |
